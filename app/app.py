@@ -222,4 +222,4 @@ else:
     st.warning("模型文件加载中或加载失败，请检查终端中的错误信息。")
 
 st.markdown('---')
-st.caption('🛠️  Powered by Hierarchical AI Models | 技术支持: 2250858@tongji.edu.cn 刘沅杭')
+st.caption('🛠️  Powered by Hierarchical Reasoning Models | 技术支持: 2250858@tongji.edu.cn 刘沅杭')

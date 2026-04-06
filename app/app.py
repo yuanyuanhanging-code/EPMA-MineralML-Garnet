@@ -122,7 +122,10 @@ def get_all_user_training_data():
     df_meta = pd.read_sql_query("SELECT data_json FROM user_training", conn)
     conn.close()
     if df_meta.empty: return pd.DataFrame()
-    dfs = [pd.read_json(row['data_json'], orient='records') for _, row in df_meta.iterrows()]
+
+    # 【核心修复】：加上 io.StringIO()，把字符串伪装成文件流，防止新版 Pandas 把它当成路径去读
+    dfs = [pd.read_json(io.StringIO(row['data_json']), orient='records') for _, row in df_meta.iterrows()]
+
     return pd.concat(dfs, ignore_index=True)
 
 

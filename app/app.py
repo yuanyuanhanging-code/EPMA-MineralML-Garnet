@@ -1,4 +1,4 @@
-# app.py (V5.7 - MLOps 终极版：加入模型持续进化与版本控制机制)
+# app.py (V6.4 - 实战黄金阈值版：完美解决图表碎裂、底部废料与假阳性预警)
 
 import streamlit as st
 import pandas as pd
@@ -14,18 +14,18 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 from imblearn.over_sampling import SMOTE
 import numpy as np
+import io
 
 # ---------- 1. 页面与路径设置 ----------
 st.set_page_config(page_title='矿物智能识别与分析系统', layout='wide', page_icon='💎')
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-DATA_PATH = os.path.join(PROJECT_ROOT, 'data', 'epma_master.CSV')  # 原始主数据集
+DATA_PATH = os.path.join(PROJECT_ROOT, 'data', 'epma_master.CSV')
 DB_PATH = os.path.join(PROJECT_ROOT, 'data', 'epma_history.db')
 
-# 模型版本控制路径
-GENERAL_MODEL_PATH = os.path.join(PROJECT_ROOT, 'models', 'rf_model_smote.pkl')  # 当前工作模型
-FACTORY_MODEL_PATH = os.path.join(PROJECT_ROOT, 'models', 'rf_model_smote_factory.pkl')  # 出厂模型
-PREV_MODEL_PATH = os.path.join(PROJECT_ROOT, 'models', 'rf_model_smote_prev.pkl')  # 上一版本备份
+GENERAL_MODEL_PATH = os.path.join(PROJECT_ROOT, 'models', 'rf_model_smote.pkl')
+FACTORY_MODEL_PATH = os.path.join(PROJECT_ROOT, 'models', 'rf_model_smote_factory.pkl')
+PREV_MODEL_PATH = os.path.join(PROJECT_ROOT, 'models', 'rf_model_smote_prev.pkl')
 GENERAL_COLS_PATH = os.path.join(PROJECT_ROOT, 'models', 'req_cols_smote.pkl')
 
 GARNET_MODEL_PATH = os.path.join(PROJECT_ROOT, 'models', 'garnet_subtype_model_v2.pkl')
@@ -36,17 +36,15 @@ if 'processed_file' not in st.session_state: st.session_state.processed_file = N
 if 'general_res' not in st.session_state: st.session_state.general_res = None
 if 'garnet_res' not in st.session_state: st.session_state.garnet_res = None
 
-# 初始化出厂模型备份 (如果不存在，自动把当前模型备份为出厂模型)
 if not os.path.exists(FACTORY_MODEL_PATH) and os.path.exists(GENERAL_MODEL_PATH):
     shutil.copy(GENERAL_MODEL_PATH, FACTORY_MODEL_PATH)
 
 
-# ---------- 3. 数据库管理 (新增增量训练表) ----------
+# ---------- 3. 数据库管理 ----------
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    # 历史预测记录表
     c.execute('''CREATE TABLE IF NOT EXISTS history
                  (
                      id
@@ -61,7 +59,6 @@ def init_db():
                      data_json
                      TEXT
                  )''')
-    # 用户上传的增量训练集表
     c.execute('''CREATE TABLE IF NOT EXISTS user_training
                  (
                      id
@@ -80,7 +77,6 @@ def init_db():
     conn.close()
 
 
-# 基础历史记录功能
 def save_history(filename, df_general, df_garnet):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -103,13 +99,12 @@ def get_history_list():
 def clear_all_history():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("DELETE FROM history");
+    c.execute("DELETE FROM history")
     c.execute("DELETE FROM sqlite_sequence WHERE name='history'")
     conn.commit()
     conn.close()
 
 
-# --- MLOps 增量训练功能库 ---
 def save_user_training_data(df):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -127,7 +122,6 @@ def get_all_user_training_data():
     df_meta = pd.read_sql_query("SELECT data_json FROM user_training", conn)
     conn.close()
     if df_meta.empty: return pd.DataFrame()
-
     dfs = [pd.read_json(row['data_json'], orient='records') for _, row in df_meta.iterrows()]
     return pd.concat(dfs, ignore_index=True)
 
@@ -143,7 +137,7 @@ def delete_last_training_batch():
 def clear_user_training_data():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("DELETE FROM user_training");
+    c.execute("DELETE FROM user_training")
     c.execute("DELETE FROM sqlite_sequence WHERE name='user_training'")
     conn.commit()
     conn.close()
@@ -153,7 +147,7 @@ init_db()
 
 # ---------- 4. 核心渲染引擎与清洗模块 ----------
 MOLAR_MASSES = {'SiO2': 60.08, 'TiO2': 79.87, 'Al2O3': 101.96, 'Cr2O3': 151.99, 'FeO': 71.84, 'MnO': 70.94,
-                'MgO': 40.30, 'CaO': 56.08, 'Na2O': 61.98, 'K2O': 94.20}
+                'MgO': 40.30, 'CaO': 56.08, 'Na2O': 61.98, 'K2O': 94.20, 'NiO': 74.69, 'P2O5': 141.94}
 CATIONS_PER_OXIDE = {'SiO2': 1, 'TiO2': 1, 'Al2O3': 2, 'Cr2O3': 2, 'FeO': 1, 'MnO': 1, 'MgO': 1, 'CaO': 1, 'Na2O': 2,
                      'K2O': 2}
 OXYGENS_PER_OXIDE = {'SiO2': 2, 'TiO2': 2, 'Al2O3': 3, 'Cr2O3': 3, 'FeO': 1, 'MnO': 1, 'MgO': 1, 'CaO': 1, 'Na2O': 1,
@@ -198,6 +192,49 @@ def calculate_garnet_formula(row):
                       'Grs(%)': (Grs / total) * 100, 'And(%)': (And / total) * 100, 'Uva(%)': (Uva / total) * 100})
 
 
+def smart_load_epma_data(file):
+    is_csv = file.name.lower().endswith('.csv')
+    if is_csv:
+        try:
+            content = file.getvalue().decode('utf-8')
+        except UnicodeDecodeError:
+            content = file.getvalue().decode('gbk', errors='ignore')
+        lines = content.splitlines()
+        header_row = 0
+        max_commas = 0
+        for i, line in enumerate(lines[:20]):
+            commas = line.count(',')
+            if commas > max_commas:
+                max_commas = commas
+                header_row = i
+        valid_csv_content = '\n'.join(lines[header_row:])
+        return pd.read_csv(io.StringIO(valid_csv_content), engine='python', on_bad_lines='skip')
+    else:
+        temp_df = pd.read_excel(file, nrows=15, header=None)
+        header_row = 0
+        max_cols = 0
+        for i, row in temp_df.iterrows():
+            valid_cols = row.notna().sum()
+            if valid_cols > max_cols:
+                max_cols = valid_cols
+                header_row = i
+        file.seek(0)
+        return pd.read_excel(file, skiprows=header_row)
+
+
+def filter_summary_rows(df):
+    df = df.reset_index(drop=True)
+    keywords = ['average', 'max', 'min', 'maximum', 'minimum', 'std.', 'std dev', 'sigma', 's.d.', 'aver', '平均',
+                '最大', '最小', '标准差']
+    drop_idx = len(df)
+    for i in range(len(df)):
+        row_str = ' '.join(df.iloc[i, :min(4, len(df.columns))].astype(str)).lower()
+        if any(kw in row_str for kw in keywords):
+            drop_idx = i
+            break
+    return df.iloc[:drop_idx]
+
+
 def clean_column_names(df):
     clean_map = {}
     for col in df.columns:
@@ -216,19 +253,33 @@ def render_analysis_results(res, garnet_features, unique_key=""):
                                            key=f"ms_{unique_key}")
         display_df = res if ('全部' in selected_minerals or not selected_minerals) else res[
             res['Pred_Mineral'].isin(selected_minerals)]
-        st.dataframe(display_df, use_container_width=True)
+
+        # 1. 依然保留表格里的详细置信度百分比展示
+        show_cols = [c for c in display_df.columns if
+                     c in MOLAR_MASSES.keys() or c.lower() in ['pointid', 'sample', 'no.', 'pred_mineral', 'total']]
+        st.dataframe(display_df[show_cols], use_container_width=True)
         st.download_button('下载主要预测结果 (CSV)', res.to_csv(index=False).encode('utf-8-sig'),
                            f'mineral_predictions_{unique_key}.csv', mime='text/csv', key=f"dl_gen_{unique_key}")
-        st.bar_chart(res['Pred_Mineral'].value_counts())
+
+        # 2. 【核心修复：画图专用的降维处理】
+        # 过滤掉彻底未知的杂质
+        valid_res = res[~res['Pred_Mineral'].str.contains('❌')].copy()
+        # 提取基础矿物名称（按左括号切割，去掉后面的具体百分比）
+        valid_res['Chart_Mineral'] = valid_res['Pred_Mineral'].apply(lambda x: str(x).split(' (')[0].strip())
+
+        # 按照清洗后的名字进行统计并画图
+        chart_data = valid_res['Chart_Mineral'].value_counts()
+        st.bar_chart(chart_data)
+
     with tab2:
         st.markdown("本模块基于**二级专家模型**，对石榴石的**具体亚类**进行智能预测与端元可视化。")
         if garnet_features is not None and not garnet_features.empty:
-            st.success(f"🔍 **成功筛选出 {len(garnet_features)} 条石榴石样本，已完成亚类定名与端元计算！**")
+            st.success(f"🔍 **成功筛选出 {len(garnet_features)} 条有效石榴石样本，已完成亚类定名！**")
             endmember_cols = ['Alm(%)', 'Pyr(%)', 'Sps(%)', 'Grs(%)', 'And(%)', 'Uva(%)']
             endmember_cols_display = [col for col in endmember_cols if
                                       col in garnet_features.columns and garnet_features[col].sum() > 0.01]
-            cols_to_show = [c for c in (['PointID', 'Pred_Subtype'] + [c for c in MOLAR_MASSES if
-                                                                       c in garnet_features.columns] + endmember_cols_display)
+            cols_to_show = [c for c in (['PointID', 'Sample', 'Pred_Subtype'] + [c for c in MOLAR_MASSES if
+                                                                                 c in garnet_features.columns] + endmember_cols_display)
                             if c in garnet_features.columns]
             st.dataframe(garnet_features.get(cols_to_show, garnet_features.columns).style.format("{:.2f}",
                                                                                                  subset=endmember_cols_display),
@@ -241,7 +292,7 @@ def render_analysis_results(res, garnet_features, unique_key=""):
             st.download_button('下载石榴石分析结果', garnet_features.to_csv(index=False).encode('utf-8-sig'),
                                f'garnet_analysis_{unique_key}.csv', mime='text/csv', key=f"dl_gar_{unique_key}")
         else:
-            st.info("ℹ️ 本次分析中没有检测到石榴石样本，跳过二级专家模型定名。")
+            st.info("ℹ️ 本次分析中没有检测到有效的石榴石样本，跳过二级专家模型定名。")
 
 
 # ---------- 5. 加载机器学习模型 ----------
@@ -255,7 +306,6 @@ def load_artifacts(_refresh_trigger=0):
         return None, None, None, None
 
 
-# 使用 trigger 强制刷新缓存
 if 'model_version' not in st.session_state: st.session_state.model_version = 0
 general_mdl, general_REQ_COLS, garnet_mdl, garnet_REQ_COLS = load_artifacts(st.session_state.model_version)
 
@@ -293,7 +343,7 @@ if app_mode == "🔬 矿物智能识别":
                                       conn)
         conn.close()
         if not query_res.empty:
-            st.info(f"正在查看历史文件: **{query_res.iloc[0]['filename']}**");
+            st.info(f"正在查看历史文件: **{query_res.iloc[0]['filename']}**")
             st.warning("💡 如需上传新数据进行分析，请在左侧菜单将历史记录选回【无】。")
             raw_data = json.loads(query_res.iloc[0]['data_json'])
             hist_general = pd.DataFrame(raw_data) if isinstance(raw_data, list) else pd.DataFrame(
@@ -312,24 +362,44 @@ if app_mode == "🔬 矿物智能识别":
             if st.session_state.processed_file != file_hash:
                 status_msg = st.empty()
                 try:
-                    df_raw = clean_column_names(
-                        pd.read_csv(uploaded) if uploaded.name.lower().endswith('.csv') else pd.read_excel(uploaded))
+                    df_raw = clean_column_names(filter_summary_rows(smart_load_epma_data(uploaded)))
                     for col in df_raw.columns:
-                        if col not in ['PointID', 'Sample']: df_raw[col] = pd.to_numeric(df_raw[col], errors='coerce')
+                        if col.lower() not in ['pointid', 'sample', 'no.']: df_raw[col] = pd.to_numeric(df_raw[col],
+                                                                                                        errors='coerce')
                     df_cleaned = df_raw.fillna(0)
                 except Exception as e:
-                    status_msg.error(f"读取出错: {e}"); st.stop()
+                    status_msg.error(f"读取出错: {e}");
+                    st.stop()
 
                 my_bar = status_msg.progress(0, text="正在通过一级通用模型进行推理...")
                 for i in range(100): time.sleep(0.005); my_bar.progress(i + 1, text="正在通过一级通用模型进行推理...")
 
                 X_general = df_cleaned.reindex(columns=general_REQ_COLS, fill_value=0)
                 res = df_cleaned.copy()
-                res['Pred_Mineral'] = general_mdl.predict(X_general)
+
+                probabilities = general_mdl.predict_proba(X_general)
+                max_probs = np.max(probabilities, axis=1)
+                predicted_classes = general_mdl.classes_[np.argmax(probabilities, axis=1)]
+
+                # 【修改为黄金实战阈值：60% 和 40%】
+                final_predictions = []
+                for prob, pred_class in zip(max_probs, predicted_classes):
+                    if prob >= 0.60:
+                        final_predictions.append(pred_class)
+                    elif prob >= 0.40:
+                        final_predictions.append(f"⚠️ {pred_class} (低置信度 {prob * 100:.1f}%)")
+                    else:
+                        final_predictions.append(f"❌ 未知/杂质 (偏向 {pred_class} {prob * 100:.1f}%)")
+
+                res['Pred_Mineral'] = final_predictions
 
                 garnet_features = None
-                if 'Garnet' in res['Pred_Mineral'].unique():
-                    garnet_data = res[res['Pred_Mineral'] == 'Garnet'].copy()
+                # 只允许正常预测或带有⚠️预警的石榴石进入二级模型，彻底过滤掉带有❌未知的杂质
+                garnet_mask = res['Pred_Mineral'].str.contains('Garnet', na=False) & ~res['Pred_Mineral'].str.contains(
+                    '❌', na=False)
+
+                if garnet_mask.any():
+                    garnet_data = res[garnet_mask].copy()
                     status_msg.info(f"🔍 筛选出 {len(garnet_data)} 条石榴石，启动二级专家模型...")
                     time.sleep(0.5)
                     endmember_results = garnet_data.apply(calculate_garnet_formula, axis=1)
@@ -337,7 +407,7 @@ if app_mode == "🔬 矿物智能识别":
                     garnet_features['Pred_Subtype'] = garnet_mdl.predict(
                         garnet_features.reindex(columns=garnet_REQ_COLS, fill_value=0))
                 else:
-                    status_msg.info("ℹ️ 未检测到石榴石样本，跳过专家模型。");
+                    status_msg.info("ℹ️ 未检测到确信的石榴石样本，跳过专家模型。");
                     time.sleep(0.5)
 
                 save_history(uploaded.name, res, garnet_features)
@@ -372,12 +442,10 @@ elif app_mode == "🧬 模型进化中心":
             else:
                 with st.spinner("🧠 正在融合数据并重建随机森林神经网络 (这可能需要几十秒)..."):
                     try:
-                        # 1. 先不写数据库！在内存中合并主数据、已有的历史增量数据、以及本次的新数据
                         df_master = pd.read_csv(DATA_PATH)
                         df_all_user = get_all_user_training_data()
                         df_combined = pd.concat([df_master, df_all_user, new_train_df], ignore_index=True)
 
-                        # 2. 按照原本的 SMOTE 逻辑进行预处理
                         df_combined = df_combined.groupby('Mineral').filter(lambda x: len(x) > 1)
                         X = df_combined.drop(columns=['PointID', 'Mineral'], errors='ignore')
                         X = clean_column_names(X)
@@ -386,7 +454,6 @@ elif app_mode == "🧬 模型进化中心":
                         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42,
                                                                             stratify=y)
 
-                        # 动态 SMOTE 补齐
                         k_neighbors_max = 5
                         counts_train = y_train.value_counts()
                         under_represented_classes = counts_train[counts_train <= k_neighbors_max].index
@@ -403,18 +470,17 @@ elif app_mode == "🧬 模型进化中心":
                         smote = SMOTE(random_state=42, k_neighbors=k_neighbors_for_smote)
                         X_train_sm, y_train_sm = smote.fit_resample(X_train, y_train)
 
-                        # 3. 训练新模型
-                        clf = RandomForestClassifier(n_estimators=300, random_state=42, n_jobs=-1)
+                        clf = RandomForestClassifier(n_estimators=100, max_depth=20, class_weight='balanced',
+                                                     random_state=42, n_jobs=-1)
                         clf.fit(X_train_sm, y_train_sm)
 
-                        # 4. [核心修复点] 只有模型没有报错且训练到底了，才正式落盘数据并备份替换！
-                        save_user_training_data(new_train_df)  # 正式写入 SQLite
-                        shutil.copy(GENERAL_MODEL_PATH, PREV_MODEL_PATH)  # 备份上一代模型
+                        save_user_training_data(new_train_df)
+                        shutil.copy(GENERAL_MODEL_PATH, PREV_MODEL_PATH)
 
-                        joblib.dump(clf, GENERAL_MODEL_PATH)  # 覆盖新模型
+                        joblib.dump(clf, GENERAL_MODEL_PATH, compress=3)
                         joblib.dump(X_train.columns.tolist(), GENERAL_COLS_PATH)
 
-                        st.session_state.model_version += 1  # 强制刷新页面缓存
+                        st.session_state.model_version += 1
                         st.success(
                             f"🎉 进化成功！模型已吸收 {len(new_train_df)} 条新知识。新的验证集准确率: {accuracy_score(y_test, clf.predict(X_test)):.4f}")
                         time.sleep(2)
@@ -422,7 +488,6 @@ elif app_mode == "🧬 模型进化中心":
 
                     except Exception as e:
                         st.error(f"训练过程中发生错误: {e}")
-                        # [提示优化] 明确告诉用户脏数据没有被保存
                         st.info("⚠️ 您的数据没有被录入系统，原模型未受影响；请检查数据格式是否规范")
 
     st.markdown("#### 🛠️ 模型版本控制台")
